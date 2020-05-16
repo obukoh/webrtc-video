@@ -2,8 +2,10 @@
 
 配信者の音声と動画が受信者に一斉配信されるためのプログラム
 
+配信者の画面
 ![talk](https://github.com/obukoh/webrtc-video/blob/master/images/talk.PNG)
 
+受信者の画面
 ![watch](https://github.com/obukoh/webrtc-video/blob/master/images/watch.PNG)
 
 ## webRTCの基本 (シグナリングはSDPとICEの交換)
