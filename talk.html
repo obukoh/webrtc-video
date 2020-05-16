@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Broadcast Talk</title>
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+</head>
+<body>
+  <button type="button" onclick="startVideo();">Start video</button>
+  <button type="button" onclick="stopVideo();">Stop video</button>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <button type="button" onclick="tellReady();">On Air</button>
+  <br />
+  <div style="position: relative;">
+   <video id="local-video" autoplay style="width: 240px; height: 180px; border: 1px solid black;"></video>
+  </div>
+
+  <!-- socket ※自分のシグナリングサーバーに合わせて変更してください------>
+  <script src="http://localhost:9001/socket.io/socket.io.js"></script>
+
+  <script>
+  var localVideo = document.getElementById('local-video');
+  var localStream = null;
+  var mediaConstraints = {'mandatory': {'OfferToReceiveAudio':false, 'OfferToReceiveVideo':false }};
+
+
+  function isLocalStreamStarted() {
+    if (localStream) {
+      return true;
+    }
+    else {
+      return false;
+    }
+  }
+
+  // -------------- multi connections --------------------
+  var MAX_CONNECTION_COUNT = 10;
+  var connections = {}; // Connection hash
+  function Connection() { // Connection Class
+    var self = this;
+    var id = "";  // socket.id of partner
+    var peerconnection = null; // RTCPeerConnection instance
+  }
+
+  function getConnection(id) {
+    var con = null;
+    con = connections[id];
+    return con;
+  }
+
+  function addConnection(id, connection) {
+    connections[id] = connection;
+  }
+
+  function getConnectionCount() {
+    var count = 0;
+    for (var id in connections) {
+      count++;
+    }
+
+    console.log('getConnectionCount=' + count);
+    return count;
+  }
+
+  function isConnectPossible() {
+    if (getConnectionCount() < MAX_CONNECTION_COUNT)
+      return true;
+    else
+      return false;
+  }
+
+  function getConnectionIndex(id_to_lookup) {
+    var index = 0;
+    for (var id in connections) {
+      if (id == id_to_lookup) {
+        return index;
+      }
+
+      index++;
+    }
+
+    // not found
+    return -1;
+  }
+
+  function deleteConnection(id) {
+    delete connections[id];
+  }
+
+  function stopAllConnections() {
+    for (var id in connections) {
+      var conn = connections[id];
+      conn.peerconnection.close();
+      conn.peerconnection = null;
+      delete connections[id];
+    }
+  }
+
+  function stopConnection(id) {
+    var conn = connections[id];
+    if(conn) {
+      console.log('stop and delete connection with id=' + id);
+      conn.peerconnection.close();
+      conn.peerconnection = null;
+      delete connections[id];
+    }
+    else {
+      console.log('try to stop connection, but not found id=' + id);
+    }
+  }
+
+  function isPeerStarted() {
+    if (getConnectionCount() > 0) {
+      return true;
+    }
+    else {
+      return false;
+    }
+  }
+
+
+  // ---- socket ------
+  // create socket
+  var socketReady = false;
+  var port = 9001;
+  var socket = io.connect('http://localhost:' + port + '/'); // ※自分のシグナリングサーバーに合わせて変更してください
+
+  // socket: channel connected
+  socket.on('connect', onOpened)
+        .on('message', onMessage)
+        .on('user disconnected', onUserDisconnect);
+
+  function onOpened(evt) {
+    console.log('socket opened.');
+    socketReady = true;
+
+    var roomname = getRoomName(); // 会議室名を取得する
+    socket.emit('enter', roomname);
+    console.log('enter to ' + roomname);
+  }
+
+  // socket: accept connection request
+  function onMessage(evt) {
+    var id = evt.from;
+    var target = evt.sendto;
+    var conn = getConnection(id);
+
+    if (evt.type === 'talk_request') {
+      if (! isLocalStreamStarted()) {
+        console.warn('local stream not started. ignore request');
+        return;
+      }
+
+      console.log("receive request, start offer.");
+      sendOffer(id);
+      return;
+    }
+    else if (evt.type === 'answer' && isPeerStarted()) {
+      console.log('Received answer, settinng answer SDP');
+      onAnswer(evt);
+    } else if (evt.type === 'candidate' && isPeerStarted()) {
+      console.log('Received ICE candidate...');
+      onCandidate(evt);
+    }
+    else if (evt.type === 'bye') {
+      console.log("got bye.");
+      stopConnection(id);
+    }
+  }
+
+  function onUserDisconnect(evt) {
+    console.log("disconnected");
+    if (evt) {
+      stopConnection(evt.id);
+    }
+  }
+
+  function getRoomName() { // たとえば、 URLに  ?roomname  とする
+    var url = document.location.href;
+    var args = url.split('?');
+    if (args.length > 1) {
+      var room = args[1];
+      if (room != "") {
+        return room;
+      }
+    }
+    return "_defaultroom";
+  }
+
+
+
+  function onAnswer(evt) {
+    console.log("Received Answer...")
+    console.log(evt);
+    setAnswer(evt);
+  }
+
+  function onCandidate(evt) {
+   var id = evt.from;
+    var conn = getConnection(id);
+    if (! conn) {
+      console.error('peerConnection not exist!');
+      return;
+    }
+
+    var candidate = new RTCIceCandidate({sdpMLineIndex:evt.sdpMLineIndex, sdpMid:evt.sdpMid, candidate:evt.candidate});
+    console.log("Received Candidate...")
+    console.log(candidate);
+    conn.peerconnection.addIceCandidate(candidate);
+  }
+
+  function sendSDP(sdp) {
+    var text = JSON.stringify(sdp);
+    console.log("---sending sdp text ---");
+    console.log(text);
+
+    // send via socket
+    socket.json.send(sdp);
+  }
+
+  function sendCandidate(candidate) {
+    var text = JSON.stringify(candidate);
+    console.log("---sending candidate text ---");
+    console.log(text);
+
+    // send via socket
+    socket.json.send(candidate);
+  }
+
+  // ---------------------- video handling -----------------------
+  // start local video
+  function startVideo() {
+
+
+  var constraints = { audio: true, video: { width: 1280, height: 720 } };
+
+  navigator.mediaDevices.getUserMedia(constraints)
+    .then(function(stream) {
+      localStream = stream;
+      var video = document.querySelector('#local-video');
+      video.srcObject = stream;
+      video.onloadedmetadata = function(e) {
+        video.play();
+        tellReady();
+      };
+    })
+    .catch(function(err) {
+      console.log(err.name + ": " + err.message);
+    });
+
+    // #== 参考にさせていただいたサイトのプログラム ==#
+    // navigator.getUserMedia({video: true, audio: true},
+    //   function (stream) { // success
+    //     localStream = stream;
+    //     localVideo.src = window.URL.createObjectURL(stream);
+    //     localVideo.play();
+    //     localVideo.volume = 0;
+    //
+    //     // auto start
+    //     tellReady();
+    //   },
+    //   function (error) { // error
+    //     console.error('An error occurred:');
+    //     console.error(error);
+    //     return;
+    //   }
+    // );
+  }
+
+  // stop local video
+  function stopVideo() {
+    hangUp();
+    
+    // #== 参考にさせていただいたサイトのプログラム ==#
+    // localVideo.src = "";
+    // localStream.stop();
+    localStream = null;
+  }
+
+  // ---------------------- connection handling -----------------------
+  function prepareNewConnection(id) {
+    var pc_config = {"iceServers":[]};
+    var peer = null;
+    try {
+      peer = new webkitRTCPeerConnection(pc_config);
+    } catch (e) {
+      console.log("Failed to create PeerConnection, exception: " + e.message);
+    }
+    var conn = new Connection();
+    conn.id = id;
+    conn.peerconnection = peer;
+    peer.id = id;
+    addConnection(id, conn);
+
+    // send any ice candidates to the other peer
+    peer.onicecandidate = function (evt) {
+      if (evt.candidate) {
+        console.log(evt.candidate);
+        sendCandidate({type: "candidate",
+                          sendto: conn.id,
+                          sdpMLineIndex: evt.candidate.sdpMLineIndex,
+                          sdpMid: evt.candidate.sdpMid,
+                          candidate: evt.candidate.candidate});
+      } else {
+        console.log("ICE event. phase=" + evt.eventPhase);
+        //conn.established = true;
+      }
+    };
+
+    console.log('Adding local stream...');
+    peer.addStream(localStream);
+
+    return conn;
+  }
+
+  function sendOffer(id) {
+    var conn = getConnection(id);
+    if (!conn) {
+      conn = prepareNewConnection(id);
+    }
+
+    conn.peerconnection.createOffer(function (sessionDescription) { // in case of success
+      conn.peerconnection.setLocalDescription(sessionDescription);
+      sessionDescription.sendto = id;
+      sendSDP(sessionDescription);
+    }, function () { // in case of error
+      console.log("Create Offer failed");
+    }, mediaConstraints);
+  }
+
+  function setAnswer(evt) {
+ var id = evt.from;
+    var conn = getConnection(id);
+    if (! conn) {
+   console.error('peerConnection not exist!');
+   return
+    }
+    conn.peerconnection.setRemoteDescription(new RTCSessionDescription(evt));
+  }
+
+  // -------- handling user UI event -----
+  function tellReady() {
+    if (! isLocalStreamStarted()) {
+      alert("Local stream not running yet. Please [Start Video] or [Start Screen].");
+      return;
+    }
+    if (! socketReady) {
+      alert("Socket is not connected to server. Please reload and try again.");
+      return;
+    }
+
+    // call others, in same room
+    console.log("tell ready to others in same room, befeore offer");
+    socket.json.send({type: "talk_ready"});
+  }
+
+
+  // stop the connection upon user request
+  function hangUp() {
+    console.log("Hang up.");
+    socket.json.send({type: "end_talk"});
+    stopAllConnections();
+  }
+
+
+  </script>
+</body>
+</html>
