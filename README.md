@@ -4,6 +4,14 @@
 
 
 
+配信者の画面
+
+![talk](https://github.com/obukoh/webrtc-video/blob/master/images/talk.PNG)
+
+受信者の画面
+
+![watch](https://github.com/obukoh/webrtc-video/blob/master/images/watch.PNG)
+
 ## webRTCの基本 (シグナリングはSDPとICEの交換)
 
 webRTCのシグナリング
